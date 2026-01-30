@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { supabase } from '@/lib/supabase';
 import { User } from '@supabase/supabase-js';
@@ -10,6 +10,7 @@ import Ranking from './components/Ranking';
 import ProfileSettings from './components/ProfileSettings';
 import Admin from './components/Admin';
 
+// --- 型定義 ---
 interface EnergyLog {
   id: string;
   intensity_db: number;
@@ -20,6 +21,15 @@ interface Profile {
   nickname: string;
   birthday: string;
   is_admin?: boolean;
+}
+
+interface Star {
+  id: number;
+  x: number;
+  y: number;
+  size: number;
+  duration: number;
+  delay: number;
 }
 
 export default function NightSky() {
@@ -38,10 +48,23 @@ export default function NightSky() {
   const animationFrameRef = useRef<number | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const wakeLockRef = useRef<any>(null);
-
-  // 【追加】記録中の一時データを保持するRef（stopMonitoringからもアクセス可能にするため）
   const recordingRef = useRef<{ history: number[], startTime: number }>({ history: [], startTime: 0 });
 
+  // --- 【新機能】ランダムな星々の生成 ---
+  // 累計エネルギーに応じて、表示する星の数を動的に計算（最大150個）
+  const stars = useMemo(() => {
+    const count = Math.min(50 + Math.floor(totalEnergy / 50), 150);
+    return Array.from({ length: count }, (_, i) => ({
+      id: i,
+      x: Math.random() * 100,
+      y: Math.random() * 100,
+      size: Math.random() * 2 + 1,
+      duration: 2 + Math.random() * 4,
+      delay: Math.random() * 5
+    }));
+  }, [totalEnergy]);
+
+  // --- 既存のロジック ---
   const calculateMonthlyAge = (birthdayStr: string) => {
     if (!birthdayStr) return 0;
     const birth = new Date(birthdayStr);
@@ -51,132 +74,100 @@ export default function NightSky() {
   };
 
   const requestWakeLock = async () => {
-    try {
+    try { 
       if ('wakeLock' in navigator) {
         wakeLockRef.current = await (navigator as any).wakeLock.request('screen');
       }
     } catch (err) {
-      console.error("Wake Lock 失敗:", err);
+      console.error("Wake Lock failed:", err);
     }
   };
 
-  const releaseWakeLock = () => {
-    if (wakeLockRef.current) {
-      wakeLockRef.current.release();
-      wakeLockRef.current = null;
-    }
+  const releaseWakeLock = () => { 
+    if (wakeLockRef.current) { 
+      wakeLockRef.current.release(); 
+      wakeLockRef.current = null; 
+    } 
   };
 
   const cleanup = () => {
     releaseWakeLock();
-    if (animationFrameRef.current) {
-      cancelAnimationFrame(animationFrameRef.current);
-      animationFrameRef.current = null;
-    }
-    if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
-      audioContextRef.current.close().catch(console.error);
-      audioContextRef.current = null;
-    }
-    if (mediaStreamRef.current) {
-      mediaStreamRef.current.getTracks().forEach(track => track.stop());
-      mediaStreamRef.current = null;
-    }
+    if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+    if (audioContextRef.current && audioContextRef.current.state !== 'closed') audioContextRef.current.close();
+    if (mediaStreamRef.current) mediaStreamRef.current.getTracks().forEach(track => track.stop());
     setVolume(0);
   };
 
-  // 【追加】蓄積されたデータを保存する共通関数
   const saveRecordingData = async () => {
     const currentHistory = [...recordingRef.current.history];
     const currentStartTime = recordingRef.current.startTime;
     const now = Date.now();
     
-    // バッファを即座にリセット（二重送信防止）
     recordingRef.current.history = [];
     recordingRef.current.startTime = now;
-
+    
     if (currentHistory.length === 0) return;
-
-    // 経過時間を計算（秒）
+    
     const duration = (now - currentStartTime) / 1000;
-    if (duration < 1) return; // 1秒未満のデータは無視
-
+    if (duration < 1) return;
+    
     const averageVolume = currentHistory.reduce((a, b) => a + b) / currentHistory.length;
     
     if (!isGuest && user) {
       const { data, error } = await supabase.from('energy_logs').insert([
-        { 
-          intensity_db: Math.round(averageVolume * 10) / 10, 
-          duration_sec: Math.round(duration) // 実際の経過時間を記録
-        }
+        { intensity_db: Math.round(averageVolume * 10) / 10, duration_sec: Math.round(duration) }
       ]).select().single();
       
-      if (error) console.error("同期失敗:", error.message);
       if (!error && data) setHistory(prev => [data, ...prev]);
     }
-
     setTotalEnergy(prev => prev + Math.round(averageVolume));
     setIsLaunching(true);
   };
 
-  // 【変更】停止時に残りのデータを保存するように修正
   const stopMonitoring = async () => {
-    cleanup(); // 先にマイク等を停止
-    await saveRecordingData(); // 残っているデータを保存
+    cleanup();
+    await saveRecordingData();
     setIsActive(false);
   };
 
   const fetchPastData = async (userId: string) => {
-    const { data: profileData } = await supabase
-      .from('profiles')
-      .select('nickname, birthday, is_admin')
-      .eq('id', userId)
-      .single();
+    const { data: profileData } = await supabase.from('profiles').select('nickname, birthday, is_admin').eq('id', userId).single();
     if (profileData) setProfile(profileData);
-
+    
     const { data: allData } = await supabase.from('energy_logs').select('intensity_db').eq('user_id', userId);
-    if (allData) {
-      setTotalEnergy(Math.round(allData.reduce((acc, row) => acc + row.intensity_db, 0)));
-    }
-
-    const { data: allLogs } = await supabase.from('energy_logs').select('id, intensity_db, created_at').eq('user_id', userId).order('created_at', { ascending: false });
+    if (allData) setTotalEnergy(Math.round(allData.reduce((acc, row) => acc + row.intensity_db, 0)));
+    
+    const { data: allLogs } = await supabase.from('energy_logs').select('*').eq('user_id', userId).order('created_at', { ascending: false });
     if (allLogs) setHistory(allLogs);
   };
 
   const handleUserChange = async (currentUser: User | null) => {
     setUser(currentUser);
-    if (currentUser) {
-      setIsGuest(false);
-      await fetchPastData(currentUser.id);
-    } else {
-      setTotalEnergy(0); setHistory([]); setProfile(null); setView('home');
+    if (currentUser) { 
+      await fetchPastData(currentUser.id); 
+    } else { 
+      setTotalEnergy(0); 
+      setHistory([]); 
+      setProfile(null); 
+      setView('home'); 
     }
   };
 
   const monitor = () => {
     if (!analyserRef.current) return;
     const dataArray = new Uint8Array(analyserRef.current.frequencyBinCount);
-    
-    // 【変更】Refの初期化
     recordingRef.current = { history: [], startTime: Date.now() };
-
+    
     const update = async () => {
       if (!analyserRef.current) return;
-
-      if (audioContextRef.current?.state === 'suspended') {
-        await audioContextRef.current.resume();
-      }
-
+      if (audioContextRef.current?.state === 'suspended') await audioContextRef.current.resume();
+      
       analyserRef.current.getByteFrequencyData(dataArray);
       const avg = dataArray.reduce((a, b) => a + b) / dataArray.length;
       setVolume(avg);
-      
-      // 【変更】Refにデータを蓄積
       recordingRef.current.history.push(avg);
-
-      // 60秒経過したら保存
-      if (Date.now() - recordingRef.current.startTime > 60000) {
-        await saveRecordingData();
-      }
+      
+      if (Date.now() - recordingRef.current.startTime > 60000) await saveRecordingData();
       animationFrameRef.current = requestAnimationFrame(update);
     };
     update();
@@ -189,24 +180,24 @@ export default function NightSky() {
       audioContextRef.current = new AudioContext();
       analyserRef.current = audioContextRef.current.createAnalyser();
       analyserRef.current.fftSize = 256;
-      const source = audioContextRef.current.createMediaStreamSource(stream);
-      source.connect(analyserRef.current);
+      audioContextRef.current.createMediaStreamSource(stream).connect(analyserRef.current);
+      
       await requestWakeLock();
       setIsActive(true);
       monitor();
-    } catch (err) {
-      alert("マイクの使用を許可してください。スマホの設定からブラウザのマイク権限を確認してください。");
+    } catch (err) { 
+      alert("マイクの使用を許可してください。スマホの設定からブラウザのマイク権限を確認してください。"); 
     }
   };
 
   const handleLogoutAction = async () => {
-    await stopMonitoring(); // ログアウト時もデータを保存
+    await stopMonitoring();
     await supabase.auth.signOut();
   };
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => handleUserChange(session?.user ?? null));
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => handleUserChange(session?.user ?? null));
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_, s) => handleUserChange(s?.user ?? null));
     
     const handleVisibilityChange = async () => {
       if (wakeLockRef.current !== null && document.visibilityState === 'visible') {
@@ -215,31 +206,114 @@ export default function NightSky() {
     };
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
-    return () => {
+    return () => { 
       subscription.unsubscribe();
       document.removeEventListener('visibilitychange', handleVisibilityChange);
-      cleanup();
+      cleanup(); 
     };
   }, []);
 
   return (
     <main className="flex min-h-screen flex-col items-center justify-center bg-slate-950 overflow-hidden relative font-sans">
-      <div className="absolute inset-0 opacity-30 bg-[radial-gradient(circle_at_50%_50%,_var(--tw-gradient-stops))] from-blue-900 via-transparent to-transparent" />
+      
+      {/* --- 【背景】動的な星空レイヤー --- */}
+      <div className="absolute inset-0 pointer-events-none">
+        {stars.map((star) => (
+          <motion.div
+            key={star.id}
+            initial={{ opacity: 0.1 }}
+            animate={{ 
+              opacity: isActive ? [0.1, 0.4 + (volume / 100), 0.1] : [0.1, 0.3, 0.1],
+              scale: isActive ? [1, 1 + (volume / 200), 1] : 1
+            }}
+            transition={{ 
+              duration: star.duration, 
+              repeat: Infinity, 
+              delay: star.delay,
+              ease: "easeInOut"
+            }}
+            style={{
+              position: 'absolute',
+              left: `${star.x}%`,
+              top: `${star.y}%`,
+              width: `${star.size}px`,
+              height: `${star.size}px`,
+              backgroundColor: 'white',
+              borderRadius: '50%',
+              boxShadow: '0 0 5px rgba(255,255,255,0.3)'
+            }}
+          />
+        ))}
+      </div>
 
+      {/* 背景オーロラ（蓄積量に応じて色が濃くなる） */}
+      <motion.div 
+        animate={{ opacity: 0.2 + Math.min(totalEnergy / 1000, 0.3) }}
+        className="absolute inset-0 bg-[radial-gradient(circle_at_50%_50%,_var(--tw-gradient-stops))] from-blue-900 via-transparent to-transparent" 
+      />
+
+      {/* --- 打ち上げ演出（ランダムな位置にランタンのように昇る） --- */}
       <AnimatePresence>
         {isLaunching && (
           <motion.div
-            initial={{ opacity: 0, y: 0, scale: 0.5, x: '-50%' }}
-            animate={{ opacity: [0, 1, 1, 0], y: -800, scaleY: [1, 3, 1], filter: ["brightness(1)", "brightness(3)", "brightness(1)"] }}
-            transition={{ duration: 1.2, ease: [0.22, 1, 0.36, 1] }}
+            initial={{ opacity: 0, y: 100, x: `${40 + Math.random() * 20}%` }}
+            animate={{ opacity: [0, 1, 0], y: -500 }}
+            transition={{ duration: 4, ease: "linear" }}
             onAnimationComplete={() => setIsLaunching(false)}
-            className="absolute left-1/2 bottom-1/2 z-0 w-4 h-16 bg-blue-100 rounded-full shadow-[0_0_30px_10px_rgba(147,197,253,0.6)]"
-            style={{ transformOrigin: 'bottom center' }}
+            className="absolute bottom-0 z-0 w-1 h-1 bg-blue-200 rounded-full shadow-[0_0_15px_5px_rgba(147,197,253,0.4)]"
           />
         )}
       </AnimatePresence>
 
-      {(user || isGuest) && (
+      {/* --- メインコンテンツ --- */}
+      <div className="relative z-10 w-full max-w-md px-6 flex flex-col items-center">
+        {/* ビュー切り替えロジック */}
+        {!user && !isGuest ? (
+          <div className="flex flex-col items-center gap-8 w-full">
+            <h1 className="text-blue-100 text-3xl font-extralight tracking-[0.3em] mb-4">STELLA ECHO</h1>
+            <Auth />
+            <button onClick={() => setIsGuest(true)} className="text-blue-400/60 text-[10px] tracking-widest underline underline-offset-8 decoration-blue-900/50 hover:text-blue-300 transition-colors">GUEST MODE</button>
+          </div>
+        ) : view === 'settings' && profile ? (
+          <ProfileSettings initialData={profile} onBack={() => setView('home')} onUpdate={() => fetchPastData(user!.id)} />
+        ) : view === 'admin' && profile?.is_admin ? (
+          <Admin onBack={() => setView('home')} />
+        ) : view === 'ranking' && !isGuest ? (
+          <Ranking monthlyAge={calculateMonthlyAge(profile?.birthday || "")} onBack={() => setView('home')} />
+        ) : view === 'dashboard' ? (
+          <Dashboard logs={history} onBack={() => setView('home')} />
+        ) : (
+          /* メインの円とボタン */
+          <div className="text-center w-full">
+            <motion.div 
+              animate={{ 
+                scale: isActive ? (1 + volume / 180) : 0.8,
+                opacity: isActive ? (0.6 + volume / 200) : 0.2,
+                boxShadow: isActive ? `0 0 ${30 + volume}px ${10 + volume/4}px rgba(255, 255, 255, 0.3)` : `0 0 10px rgba(255, 255, 255, 0.1)`
+              }}
+              className="w-24 h-24 bg-white rounded-full mb-12 mx-auto" 
+            />
+            <p className="text-blue-300 font-extralight tracking-[0.3em] mb-10 h-6 text-sm">
+              {isActive ? "宇宙に音が溶けていく" : "静かな夜、航海の準備を"}
+            </p>
+            <button 
+              onClick={isActive ? stopMonitoring : startMonitoring} 
+              className={`w-full py-4 rounded-full font-light tracking-widest border transition-all duration-700 ${isActive ? 'border-blue-500/30 text-blue-200 bg-blue-900/10' : 'border-blue-400 text-blue-100 bg-transparent'}`}
+            >
+              {isActive ? "航海を終了する" : "航海を開始する"}
+            </button>
+            <div className="mt-12">
+              <p className="text-slate-500 text-[9px] tracking-[0.4em] uppercase mb-2">Total Accumulated Stella</p>
+              <p className="text-white text-4xl font-extralight tracking-tighter">
+                {totalEnergy.toLocaleString()} <span className="text-xs text-blue-400 ml-1 font-mono">stella</span>
+              </p>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* トップバー（ナビゲーション） */}
+      {(user || isGuest) && view === 'home' && (
         <div className="fixed top-6 left-6 right-6 flex justify-between items-center z-50">
           <button onClick={() => !isGuest && setView('settings')} className="flex flex-col text-left group transition-opacity">
             <span className="text-blue-100 text-[12px] tracking-[0.1em] font-light group-hover:text-blue-400">
@@ -257,45 +331,16 @@ export default function NightSky() {
                 {profile?.is_admin && (
                   <button onClick={() => setView('admin')} className="text-[9px] tracking-widest text-red-500/50 hover:text-red-400 transition-colors">ADMIN</button>
                 )}
-                
-                <button onClick={() => setView('ranking')} className={`text-[9px] tracking-widest transition-colors ${view === 'ranking' ? 'text-blue-400' : 'text-slate-500 hover:text-blue-200'}`}>RANKING</button>
-                <button onClick={() => setView('dashboard')} className={`text-[9px] tracking-widest transition-colors ${view === 'dashboard' ? 'text-blue-400' : 'text-slate-500 hover:text-blue-200'}`}>DASHBOARD</button>
+                <button onClick={() => setView('ranking')} className="text-[9px] tracking-widest text-slate-500 hover:text-blue-200 transition-colors">RANKING</button>
+                <button onClick={() => setView('dashboard')} className="text-[9px] tracking-widest text-slate-500 hover:text-blue-200 transition-colors">DASHBOARD</button>
               </>
             )}
-            <button onClick={isGuest ? () => setIsGuest(false) : handleLogoutAction} className="text-slate-500 text-[9px] tracking-widest hover:text-red-400 px-3 py-1 bg-slate-900/40 rounded-full border border-white/5">
+            <button onClick={isGuest ? () => setIsGuest(false) : handleLogoutAction} className="text-slate-500 text-[9px] tracking-widest hover:text-red-400 px-3 py-1 bg-slate-900/40 rounded-full border border-white/5 transition-colors">
               {isGuest ? "EXIT" : "LOGOUT"}
             </button>
           </div>
         </div>
       )}
-
-      <div className="relative flex flex-col items-center justify-center z-10 w-full max-w-md px-6">
-        {!user && !isGuest ? (
-          <div className="flex flex-col items-center gap-8 w-full mt-[-5vh]">
-            <h1 className="text-blue-100 text-3xl font-extralight tracking-[0.3em] mb-4">STELLA ECHO</h1>
-            <Auth />
-            <button onClick={() => setIsGuest(true)} className="text-blue-400/60 text-[10px] tracking-widest underline underline-offset-8 decoration-blue-900/50 hover:text-blue-300 transition-colors">GUEST MODE</button>
-          </div>
-        ) : view === 'settings' && profile ? (
-          <ProfileSettings initialData={profile} onBack={() => setView('home')} onUpdate={() => fetchPastData(user!.id)} />
-        ) : view === 'admin' && profile?.is_admin ? (
-          <Admin onBack={() => setView('home')} />
-        ) : view === 'ranking' && !isGuest ? (
-          <Ranking monthlyAge={calculateMonthlyAge(profile?.birthday || "")} onBack={() => setView('home')} />
-        ) : view === 'dashboard' ? (
-          <Dashboard logs={history} onBack={() => setView('home')} />
-        ) : (
-          <div className="text-center">
-            <motion.div animate={{ scale: isActive ? (1 + volume / 150) : 0.8, opacity: isActive ? (0.4 + volume / 200) : 0.1, boxShadow: isActive ? `0 0 ${20 + volume}px ${10 + volume / 2}px rgba(255, 255, 255, 0.4)` : `0 0 10px rgba(255, 255, 255, 0.1)` }} className="w-24 h-24 bg-white rounded-full mb-12 mx-auto" />
-            <p className="text-blue-300 font-extralight tracking-[0.3em] mb-10 h-6">{isActive ? "君の咆哮が、星を創る" : "静かな夜、航海の準備を"}</p>
-            <button onClick={isActive ? stopMonitoring : startMonitoring} className={`w-full py-4 rounded-full font-light tracking-widest border transition-all duration-500 ${isActive ? 'border-red-500/50 text-red-200 bg-red-900/10' : 'border-blue-400 text-blue-100 bg-transparent'}`}>{isActive ? "航海を終了する" : "航海を開始する"}</button>
-            <div className="mt-10">
-              <p className="text-slate-500 text-[9px] tracking-[0.3em] uppercase mb-1">Cumulative Energy</p>
-              <p className="text-white text-3xl font-light tracking-tighter">{totalEnergy.toLocaleString()} <span className="text-xs text-blue-400 ml-1 font-mono">stella</span></p>
-            </div>
-          </div>
-        )}
-      </div>
     </main>
   );
 }
