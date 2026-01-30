@@ -8,7 +8,7 @@ import Auth from './components/Auth';
 import Dashboard from './components/Dashboard';
 import Ranking from './components/Ranking';
 import ProfileSettings from './components/ProfileSettings';
-import Admin from './components/Admin'; // 追加
+import Admin from './components/Admin';
 
 interface EnergyLog {
   id: string;
@@ -19,13 +19,12 @@ interface EnergyLog {
 interface Profile {
   nickname: string;
   birthday: string;
-  is_admin?: boolean; // 追加
+  is_admin?: boolean;
 }
 
 export default function NightSky() {
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
-  // viewに 'admin' を追加
   const [view, setView] = useState<'home' | 'dashboard' | 'ranking' | 'settings' | 'admin'>('home'); 
   const [isGuest, setIsGuest] = useState(false);
   const [volume, setVolume] = useState(0);
@@ -39,6 +38,9 @@ export default function NightSky() {
   const animationFrameRef = useRef<number | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const wakeLockRef = useRef<any>(null);
+
+  // 【追加】記録中の一時データを保持するRef（stopMonitoringからもアクセス可能にするため）
+  const recordingRef = useRef<{ history: number[], startTime: number }>({ history: [], startTime: 0 });
 
   const calculateMonthlyAge = (birthdayStr: string) => {
     if (!birthdayStr) return 0;
@@ -82,13 +84,48 @@ export default function NightSky() {
     setVolume(0);
   };
 
-  const stopMonitoring = () => {
-    cleanup();
+  // 【追加】蓄積されたデータを保存する共通関数
+  const saveRecordingData = async () => {
+    const currentHistory = [...recordingRef.current.history];
+    const currentStartTime = recordingRef.current.startTime;
+    const now = Date.now();
+    
+    // バッファを即座にリセット（二重送信防止）
+    recordingRef.current.history = [];
+    recordingRef.current.startTime = now;
+
+    if (currentHistory.length === 0) return;
+
+    // 経過時間を計算（秒）
+    const duration = (now - currentStartTime) / 1000;
+    if (duration < 1) return; // 1秒未満のデータは無視
+
+    const averageVolume = currentHistory.reduce((a, b) => a + b) / currentHistory.length;
+    
+    if (!isGuest && user) {
+      const { data, error } = await supabase.from('energy_logs').insert([
+        { 
+          intensity_db: Math.round(averageVolume * 10) / 10, 
+          duration_sec: Math.round(duration) // 実際の経過時間を記録
+        }
+      ]).select().single();
+      
+      if (error) console.error("同期失敗:", error.message);
+      if (!error && data) setHistory(prev => [data, ...prev]);
+    }
+
+    setTotalEnergy(prev => prev + Math.round(averageVolume));
+    setIsLaunching(true);
+  };
+
+  // 【変更】停止時に残りのデータを保存するように修正
+  const stopMonitoring = async () => {
+    cleanup(); // 先にマイク等を停止
+    await saveRecordingData(); // 残っているデータを保存
     setIsActive(false);
   };
 
   const fetchPastData = async (userId: string) => {
-    // is_admin も取得するように変更
     const { data: profileData } = await supabase
       .from('profiles')
       .select('nickname, birthday, is_admin')
@@ -118,8 +155,9 @@ export default function NightSky() {
   const monitor = () => {
     if (!analyserRef.current) return;
     const dataArray = new Uint8Array(analyserRef.current.frequencyBinCount);
-    let lastSavedTime = Date.now();
-    let volumeHistory: number[] = [];
+    
+    // 【変更】Refの初期化
+    recordingRef.current = { history: [], startTime: Date.now() };
 
     const update = async () => {
       if (!analyserRef.current) return;
@@ -131,25 +169,13 @@ export default function NightSky() {
       analyserRef.current.getByteFrequencyData(dataArray);
       const avg = dataArray.reduce((a, b) => a + b) / dataArray.length;
       setVolume(avg);
-      volumeHistory.push(avg);
+      
+      // 【変更】Refにデータを蓄積
+      recordingRef.current.history.push(avg);
 
-      const now = Date.now();
-      if (now - lastSavedTime > 60000 && volumeHistory.length > 0) {
-        const averageVolume = volumeHistory.reduce((a, b) => a + b) / volumeHistory.length;
-        
-        if (!isGuest && user) {
-          const { data, error } = await supabase.from('energy_logs').insert([
-            { intensity_db: Math.round(averageVolume * 10) / 10, duration_sec: 60 }
-          ]).select().single();
-          
-          if (error) console.error("同期失敗:", error.message);
-          if (!error && data) setHistory(prev => [data, ...prev]);
-        }
-
-        setTotalEnergy(prev => prev + Math.round(averageVolume));
-        setIsLaunching(true);
-        volumeHistory = [];
-        lastSavedTime = now;
+      // 60秒経過したら保存
+      if (Date.now() - recordingRef.current.startTime > 60000) {
+        await saveRecordingData();
       }
       animationFrameRef.current = requestAnimationFrame(update);
     };
@@ -174,7 +200,7 @@ export default function NightSky() {
   };
 
   const handleLogoutAction = async () => {
-    stopMonitoring();
+    await stopMonitoring(); // ログアウト時もデータを保存
     await supabase.auth.signOut();
   };
 
@@ -228,7 +254,6 @@ export default function NightSky() {
           <div className="flex items-center gap-4">
             {!isGuest && (
               <>
-                {/* 管理者ボタン（管理者のみ表示） */}
                 {profile?.is_admin && (
                   <button onClick={() => setView('admin')} className="text-[9px] tracking-widest text-red-500/50 hover:text-red-400 transition-colors">ADMIN</button>
                 )}
