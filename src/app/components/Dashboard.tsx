@@ -3,7 +3,7 @@
 import { useState, useMemo } from 'react';
 import { 
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,
-  AreaChart, Area, LineChart, Line, CartesianGrid
+  AreaChart, Area, LineChart, Line, CartesianGrid, Legend // 【追加】Legendをインポート
 } from 'recharts';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -111,7 +111,7 @@ export default function Dashboard({ logs, onBack }: DashboardProps) {
 
     rawDayLogs.forEach(log => {
       const date = new Date(log.created_at);
-      const hourIndex = date.getHours(); // 0~23
+      const hourIndex = date.getHours();
       timeSlots[hourIndex].intensity += log.intensity_db;
       timeSlots[hourIndex].count += 1;
     });
@@ -225,11 +225,32 @@ export default function Dashboard({ logs, onBack }: DashboardProps) {
               <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
               <XAxis dataKey="hour" stroke="#475569" fontSize={9} tickLine={false} axisLine={false} />
               <YAxis hide />
+              
+              {/* 【追加】凡例を表示して、どの日付の線か分かるようにする */}
+              <Legend 
+                wrapperStyle={{ fontSize: '10px', color: '#94a3b8', paddingTop: '10px' }} 
+                iconSize={8}
+                iconType="circle"
+              />
+
               <Tooltip 
                 contentStyle={{ backgroundColor: '#0f172a', border: 'none', borderRadius: '12px', fontSize: '10px' }} 
                 itemSorter={(item) => (item.value as number) * -1}
               />
-              <Line type="monotone" dataKey="average" stroke="#ffffff" strokeWidth={3} dot={false} animationDuration={2000} strokeDasharray="2 2" />
+              
+              {/* 平均線 */}
+              <Line 
+                type="monotone" 
+                dataKey="average" 
+                stroke="#ffffff" 
+                strokeWidth={3} 
+                dot={false} 
+                animationDuration={2000} 
+                strokeDasharray="2 2" 
+                connectNulls // 念のため平均線もつなげる
+              />
+
+              {/* 日別ライン */}
               {targetPatternDays.map((date, index) => (
                 <Line 
                   key={date} 
@@ -237,8 +258,10 @@ export default function Dashboard({ logs, onBack }: DashboardProps) {
                   dataKey={date} 
                   stroke={PATTERN_COLORS[index % PATTERN_COLORS.length]} 
                   strokeWidth={1.5} 
-                  opacity={0.7} 
+                  opacity={0.9} // 視認性を上げるため不透明度を高く設定
                   dot={false} 
+                  connectNulls // 【重要】データがない時間帯も線をつなげて表示する
+                  activeDot={{ r: 4 }}
                 />
               ))}
             </LineChart>
