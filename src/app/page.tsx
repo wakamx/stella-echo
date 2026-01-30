@@ -84,13 +84,15 @@ export default function NightSky() {
     setVolume(0);
   };
 
-  // 【追加】蓄積されたデータを保存する共通関数
-  const saveRecordingData = async () => {
+  // 【修正】蓄積されたデータを保存する共通関数
+  // awaitを削除し、内部で非同期処理を完結させることでループを止めないように変更
+  const saveRecordingData = () => {
+    const now = Date.now();
+    // データを即座にローカル変数へ退避
     const currentHistory = [...recordingRef.current.history];
     const currentStartTime = recordingRef.current.startTime;
-    const now = Date.now();
     
-    // バッファを即座にリセット（二重送信防止）
+    // バッファを即座にリセット（二重送信防止とループ継続のため）
     recordingRef.current.history = [];
     recordingRef.current.startTime = now;
 
@@ -102,26 +104,59 @@ export default function NightSky() {
 
     const averageVolume = currentHistory.reduce((a, b) => a + b) / currentHistory.length;
     
-    if (!isGuest && user) {
-      const { data, error } = await supabase.from('energy_logs').insert([
-        { 
-          intensity_db: Math.round(averageVolume * 10) / 10, 
-          duration_sec: Math.round(duration) // 実際の経過時間を記録
-        }
-      ]).select().single();
-      
-      if (error) console.error("同期失敗:", error.message);
-      if (!error && data) setHistory(prev => [data, ...prev]);
-    }
-
+    // UI更新（即時反映）
     setTotalEnergy(prev => prev + Math.round(averageVolume));
     setIsLaunching(true);
+
+    // サーバー送信処理（非同期で実行・Fire and forget）
+    if (!isGuest && user) {
+      (async () => {
+        try {
+          // ネットワーク状態チェック（簡易）
+          if (typeof navigator !== 'undefined' && !navigator.onLine) {
+            console.warn("Offline: Skipping sync");
+            return;
+          }
+
+          const insertData = { 
+            intensity_db: Math.round(averageVolume * 10) / 10, 
+            duration_sec: Math.round(duration) 
+          };
+
+          let { data, error } = await supabase.from('energy_logs').insert([insertData]).select().single();
+          
+          // エラー時の再試行ロジック（特に認証切れ対策）
+          if (error) {
+            console.error("Sync failed:", error.message);
+            // 認証エラーやJWT期限切れの場合、セッションリフレッシュを試みる
+            // PostgrestErrorにstatusプロパティがないため、anyキャストで回避
+            if (error.code === 'PGRST301' || error.message.includes("JWT") || (error as any).status === 401) {
+              console.log("Attempting session refresh...");
+              const { data: refreshData, error: refreshError } = await supabase.auth.refreshSession();
+              
+              if (!refreshError && refreshData.session) {
+                // セッション更新成功後に再送
+                const retry = await supabase.from('energy_logs').insert([insertData]).select().single();
+                data = retry.data;
+                error = retry.error;
+              }
+            }
+          }
+
+          if (!error && data) {
+            setHistory(prev => [data, ...prev]);
+          }
+        } catch (err) {
+          console.error("Unexpected sync error:", err);
+        }
+      })();
+    }
   };
 
   // 【変更】停止時に残りのデータを保存するように修正
-  const stopMonitoring = async () => {
+  const stopMonitoring = () => {
     cleanup(); // 先にマイク等を停止
-    await saveRecordingData(); // 残っているデータを保存
+    saveRecordingData(); // 残っているデータを保存（非同期）
     setIsActive(false);
   };
 
@@ -162,8 +197,13 @@ export default function NightSky() {
     const update = async () => {
       if (!analyserRef.current) return;
 
+      // AudioContextの状態確認と復帰
       if (audioContextRef.current?.state === 'suspended') {
-        await audioContextRef.current.resume();
+        try {
+          await audioContextRef.current.resume();
+        } catch (e) {
+          console.error("Audio resume failed", e);
+        }
       }
 
       analyserRef.current.getByteFrequencyData(dataArray);
@@ -175,7 +215,8 @@ export default function NightSky() {
 
       // 15秒経過したら保存
       if (Date.now() - recordingRef.current.startTime > 15000) {
-        await saveRecordingData();
+        // awaitを削除：描画ループをブロックしないようにする
+        saveRecordingData();
       }
       animationFrameRef.current = requestAnimationFrame(update);
     };
@@ -184,6 +225,11 @@ export default function NightSky() {
 
   const startMonitoring = async () => {
     try {
+      // 開始前にセッションが有効か軽くチェック（無効なら更新を試みる）
+      if (!isGuest) {
+         await supabase.auth.getSession();
+      }
+
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       mediaStreamRef.current = stream;
       audioContextRef.current = new AudioContext();
@@ -195,12 +241,13 @@ export default function NightSky() {
       setIsActive(true);
       monitor();
     } catch (err) {
-      alert("マイクの使用を許可してください。スマホの設定からブラウザのマイク権限を確認してください。");
+      console.error(err);
+      alert("マイクの使用を許可してください。または他のアプリがマイクを使用中の可能性があります。");
     }
   };
 
   const handleLogoutAction = async () => {
-    await stopMonitoring(); // ログアウト時もデータを保存
+    stopMonitoring(); // ログアウト時もデータを保存（非同期）
     await supabase.auth.signOut();
   };
 
@@ -211,6 +258,10 @@ export default function NightSky() {
     const handleVisibilityChange = async () => {
       if (wakeLockRef.current !== null && document.visibilityState === 'visible') {
         await requestWakeLock();
+        // 復帰時にAudioContextも確認
+        if (audioContextRef.current?.state === 'suspended') {
+            audioContextRef.current.resume();
+        }
       }
     };
     document.addEventListener('visibilitychange', handleVisibilityChange);
