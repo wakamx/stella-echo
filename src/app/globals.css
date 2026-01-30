@@ -1,1 +1,10 @@
 @import "tailwindcss";
+
+@layer base {
+  html, body {
+    /* bg-slate-950 のカラーコード(#020617)を直接指定 */
+    background-color: #020617;
+    /* スマホで引っ張った時の白い余白を防止 */
+    overscroll-behavior-y: none;
+  }
+}
