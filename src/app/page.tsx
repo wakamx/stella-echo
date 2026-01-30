@@ -9,7 +9,6 @@ import Dashboard from './components/Dashboard';
 import Ranking from './components/Ranking';
 import ProfileSettings from './components/ProfileSettings';
 
-// --- 型定義 ---
 interface EnergyLog {
   id: string;
   intensity_db: number;
@@ -22,7 +21,6 @@ interface Profile {
 }
 
 export default function NightSky() {
-  // --- 状態管理 ---
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [view, setView] = useState<'home' | 'dashboard' | 'ranking' | 'settings'>('home'); 
@@ -37,8 +35,9 @@ export default function NightSky() {
   const analyserRef = useRef<AnalyserNode | null>(null);
   const animationFrameRef = useRef<number | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
+  // Wake Lockの状態管理用
+  const wakeLockRef = useRef<any>(null);
 
-  // --- 月齢計算 (2026年1月基準) ---
   const calculateMonthlyAge = (birthdayStr: string) => {
     if (!birthdayStr) return 0;
     const birth = new Date(birthdayStr);
@@ -47,8 +46,27 @@ export default function NightSky() {
     return months < 0 ? 0 : months;
   };
 
-  // --- リソース解放 ---
+  // 画面スリープ防止の要求
+  const requestWakeLock = async () => {
+    try {
+      if ('wakeLock' in navigator) {
+        wakeLockRef.current = await (navigator as any).wakeLock.request('screen');
+      }
+    } catch (err) {
+      console.error("Wake Lock 失敗:", err);
+    }
+  };
+
+  // スリープ防止の解除
+  const releaseWakeLock = () => {
+    if (wakeLockRef.current) {
+      wakeLockRef.current.release();
+      wakeLockRef.current = null;
+    }
+  };
+
   const cleanup = () => {
+    releaseWakeLock();
     if (animationFrameRef.current) {
       cancelAnimationFrame(animationFrameRef.current);
       animationFrameRef.current = null;
@@ -69,30 +87,16 @@ export default function NightSky() {
     setIsActive(false);
   };
 
-  // --- データ取得 ---
   const fetchPastData = async (userId: string) => {
-    const { data: profileData } = await supabase
-      .from('profiles')
-      .select('nickname, birthday')
-      .eq('id', userId)
-      .single();
+    const { data: profileData } = await supabase.from('profiles').select('nickname, birthday').eq('id', userId).single();
     if (profileData) setProfile(profileData);
 
-    const { data: allData } = await supabase
-      .from('energy_logs')
-      .select('intensity_db')
-      .eq('user_id', userId);
-    
+    const { data: allData } = await supabase.from('energy_logs').select('intensity_db').eq('user_id', userId);
     if (allData) {
-      const sum = allData.reduce((acc, row) => acc + row.intensity_db, 0);
-      setTotalEnergy(Math.round(sum));
+      setTotalEnergy(Math.round(allData.reduce((acc, row) => acc + row.intensity_db, 0)));
     }
 
-    const { data: allLogs } = await supabase
-      .from('energy_logs')
-      .select('id, intensity_db, created_at')
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false });
+    const { data: allLogs } = await supabase.from('energy_logs').select('id, intensity_db, created_at').eq('user_id', userId).order('created_at', { ascending: false });
     if (allLogs) setHistory(allLogs);
   };
 
@@ -102,14 +106,10 @@ export default function NightSky() {
       setIsGuest(false);
       await fetchPastData(currentUser.id);
     } else {
-      setTotalEnergy(0);
-      setHistory([]);
-      setProfile(null);
-      setView('home');
+      setTotalEnergy(0); setHistory([]); setProfile(null); setView('home');
     }
   };
 
-  // --- 1分間隔での同期 ---
   const monitor = () => {
     if (!analyserRef.current) return;
     const dataArray = new Uint8Array(analyserRef.current.frequencyBinCount);
@@ -118,6 +118,12 @@ export default function NightSky() {
 
     const update = async () => {
       if (!analyserRef.current) return;
+
+      // スマホのスリープ復帰時にAudioContextがSuspendedになる対策
+      if (audioContextRef.current?.state === 'suspended') {
+        await audioContextRef.current.resume();
+      }
+
       analyserRef.current.getByteFrequencyData(dataArray);
       const avg = dataArray.reduce((a, b) => a + b) / dataArray.length;
       setVolume(avg);
@@ -126,12 +132,16 @@ export default function NightSky() {
       const now = Date.now();
       if (now - lastSavedTime > 60000 && volumeHistory.length > 0) {
         const averageVolume = volumeHistory.reduce((a, b) => a + b) / volumeHistory.length;
+        
         if (!isGuest && user) {
           const { data, error } = await supabase.from('energy_logs').insert([
             { intensity_db: Math.round(averageVolume * 10) / 10, duration_sec: 60 }
           ]).select().single();
+          
+          if (error) console.error("同期失敗:", error.message);
           if (!error && data) setHistory(prev => [data, ...prev]);
         }
+
         setTotalEnergy(prev => prev + Math.round(averageVolume));
         setIsLaunching(true);
         volumeHistory = [];
@@ -151,24 +161,46 @@ export default function NightSky() {
       analyserRef.current.fftSize = 256;
       const source = audioContextRef.current.createMediaStreamSource(stream);
       source.connect(analyserRef.current);
+      
+      // 航海開始時にスリープ防止を有効化
+      await requestWakeLock();
+      
       setIsActive(true);
       monitor();
     } catch (err) {
-      alert("マイクの使用を許可してください。");
+      alert("マイクの使用を許可してください。スマホの設定からブラウザのマイク権限を確認してください。");
     }
+  };
+
+  const handleLogoutAction = async () => {
+    stopMonitoring();
+    await supabase.auth.signOut();
   };
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => handleUserChange(session?.user ?? null));
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => handleUserChange(session?.user ?? null));
-    return () => { subscription.unsubscribe(); cleanup(); };
+    
+    // アプリがバックグラウンドから戻ったときにWake Lockを再要求する
+    const handleVisibilityChange = async () => {
+      if (wakeLockRef.current !== null && document.visibilityState === 'visible') {
+        await requestWakeLock();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      subscription.unsubscribe();
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      cleanup();
+    };
   }, []);
 
   return (
     <main className="flex min-h-screen flex-col items-center justify-center bg-slate-950 overflow-hidden relative font-sans">
       <div className="absolute inset-0 opacity-30 bg-[radial-gradient(circle_at_50%_50%,_var(--tw-gradient-stops))] from-blue-900 via-transparent to-transparent" />
 
-      {/* 打ち上げエフェクト */}
+      {/* 演出とナビゲーション（中略、以前のコードと同じ） */}
       <AnimatePresence>
         {isLaunching && (
           <motion.div
@@ -182,13 +214,9 @@ export default function NightSky() {
         )}
       </AnimatePresence>
 
-      {/* トップバー */}
       {(user || isGuest) && (
         <div className="fixed top-6 left-6 right-6 flex justify-between items-center z-50">
-          <button 
-            onClick={() => !isGuest && setView('settings')}
-            className="flex flex-col text-left group transition-opacity"
-          >
+          <button onClick={() => !isGuest && setView('settings')} className="flex flex-col text-left group transition-opacity">
             <span className="text-blue-100 text-[12px] tracking-[0.1em] font-light group-hover:text-blue-400">
               {isGuest ? "GUEST MODE" : (profile?.nickname || "VOYAGER")}
             </span>
@@ -205,39 +233,27 @@ export default function NightSky() {
                 <button onClick={() => setView('dashboard')} className={`text-[9px] tracking-widest transition-colors ${view === 'dashboard' ? 'text-blue-400' : 'text-slate-500 hover:text-blue-200'}`}>DASHBOARD</button>
               </>
             )}
-            <button onClick={isGuest ? () => setIsGuest(false) : () => { stopMonitoring(); supabase.auth.signOut(); }} className="text-slate-500 text-[9px] tracking-widest hover:text-red-400 px-3 py-1 bg-slate-900/40 rounded-full border border-white/5">
+            <button onClick={isGuest ? () => setIsGuest(false) : handleLogoutAction} className="text-slate-500 text-[9px] tracking-widest hover:text-red-400 px-3 py-1 bg-slate-900/40 rounded-full border border-white/5">
               {isGuest ? "EXIT" : "LOGOUT"}
             </button>
           </div>
         </div>
       )}
 
-      {/* コンテンツエリア */}
       <div className="relative flex flex-col items-center justify-center z-10 w-full max-w-md px-6">
         {!user && !isGuest ? (
-          // --- ログイン画面 (GUEST MODEボタンを修復) ---
           <div className="flex flex-col items-center gap-8 w-full mt-[-5vh]">
             <h1 className="text-blue-100 text-3xl font-extralight tracking-[0.3em] mb-4">STELLA ECHO</h1>
             <Auth />
-            <button 
-              onClick={() => setIsGuest(true)} 
-              className="text-blue-400/60 text-[10px] tracking-widest underline underline-offset-8 decoration-blue-900/50 hover:text-blue-300 transition-colors"
-            >
-              GUEST MODE
-            </button>
+            <button onClick={() => setIsGuest(true)} className="text-blue-400/60 text-[10px] tracking-widest underline underline-offset-8 decoration-blue-900/50 hover:text-blue-300 transition-colors">GUEST MODE</button>
           </div>
         ) : view === 'settings' && profile ? (
-          <ProfileSettings 
-            initialData={profile} 
-            onBack={() => setView('home')} 
-            onUpdate={() => fetchPastData(user!.id)} 
-          />
+          <ProfileSettings initialData={profile} onBack={() => setView('home')} onUpdate={() => fetchPastData(user!.id)} />
         ) : view === 'ranking' && !isGuest ? (
           <Ranking monthlyAge={calculateMonthlyAge(profile?.birthday || "")} onBack={() => setView('home')} />
         ) : view === 'dashboard' ? (
           <Dashboard logs={history} onBack={() => setView('home')} />
         ) : (
-          // --- メイン：星空画面 ---
           <div className="text-center">
             <motion.div animate={{ scale: isActive ? (1 + volume / 150) : 0.8, opacity: isActive ? (0.4 + volume / 200) : 0.1, boxShadow: isActive ? `0 0 ${20 + volume}px ${10 + volume / 2}px rgba(255, 255, 255, 0.4)` : `0 0 10px rgba(255, 255, 255, 0.1)` }} className="w-24 h-24 bg-white rounded-full mb-12 mx-auto" />
             <p className="text-blue-300 font-extralight tracking-[0.3em] mb-10 h-6">{isActive ? "君の咆哮が、星を創る" : "静かな夜、航海の準備を"}</p>
