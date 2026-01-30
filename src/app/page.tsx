@@ -8,6 +8,7 @@ import Auth from './components/Auth';
 import Dashboard from './components/Dashboard';
 import Ranking from './components/Ranking';
 import ProfileSettings from './components/ProfileSettings';
+import Admin from './components/Admin'; // 追加
 
 interface EnergyLog {
   id: string;
@@ -18,12 +19,14 @@ interface EnergyLog {
 interface Profile {
   nickname: string;
   birthday: string;
+  is_admin?: boolean; // 追加
 }
 
 export default function NightSky() {
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
-  const [view, setView] = useState<'home' | 'dashboard' | 'ranking' | 'settings'>('home'); 
+  // viewに 'admin' を追加
+  const [view, setView] = useState<'home' | 'dashboard' | 'ranking' | 'settings' | 'admin'>('home'); 
   const [isGuest, setIsGuest] = useState(false);
   const [volume, setVolume] = useState(0);
   const [isActive, setIsActive] = useState(false);
@@ -35,7 +38,6 @@ export default function NightSky() {
   const analyserRef = useRef<AnalyserNode | null>(null);
   const animationFrameRef = useRef<number | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
-  // Wake Lockの状態管理用
   const wakeLockRef = useRef<any>(null);
 
   const calculateMonthlyAge = (birthdayStr: string) => {
@@ -46,7 +48,6 @@ export default function NightSky() {
     return months < 0 ? 0 : months;
   };
 
-  // 画面スリープ防止の要求
   const requestWakeLock = async () => {
     try {
       if ('wakeLock' in navigator) {
@@ -57,7 +58,6 @@ export default function NightSky() {
     }
   };
 
-  // スリープ防止の解除
   const releaseWakeLock = () => {
     if (wakeLockRef.current) {
       wakeLockRef.current.release();
@@ -88,7 +88,12 @@ export default function NightSky() {
   };
 
   const fetchPastData = async (userId: string) => {
-    const { data: profileData } = await supabase.from('profiles').select('nickname, birthday').eq('id', userId).single();
+    // is_admin も取得するように変更
+    const { data: profileData } = await supabase
+      .from('profiles')
+      .select('nickname, birthday, is_admin')
+      .eq('id', userId)
+      .single();
     if (profileData) setProfile(profileData);
 
     const { data: allData } = await supabase.from('energy_logs').select('intensity_db').eq('user_id', userId);
@@ -119,7 +124,6 @@ export default function NightSky() {
     const update = async () => {
       if (!analyserRef.current) return;
 
-      // スマホのスリープ復帰時にAudioContextがSuspendedになる対策
       if (audioContextRef.current?.state === 'suspended') {
         await audioContextRef.current.resume();
       }
@@ -161,10 +165,7 @@ export default function NightSky() {
       analyserRef.current.fftSize = 256;
       const source = audioContextRef.current.createMediaStreamSource(stream);
       source.connect(analyserRef.current);
-      
-      // 航海開始時にスリープ防止を有効化
       await requestWakeLock();
-      
       setIsActive(true);
       monitor();
     } catch (err) {
@@ -181,7 +182,6 @@ export default function NightSky() {
     supabase.auth.getSession().then(({ data: { session } }) => handleUserChange(session?.user ?? null));
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => handleUserChange(session?.user ?? null));
     
-    // アプリがバックグラウンドから戻ったときにWake Lockを再要求する
     const handleVisibilityChange = async () => {
       if (wakeLockRef.current !== null && document.visibilityState === 'visible') {
         await requestWakeLock();
@@ -200,7 +200,6 @@ export default function NightSky() {
     <main className="flex min-h-screen flex-col items-center justify-center bg-slate-950 overflow-hidden relative font-sans">
       <div className="absolute inset-0 opacity-30 bg-[radial-gradient(circle_at_50%_50%,_var(--tw-gradient-stops))] from-blue-900 via-transparent to-transparent" />
 
-      {/* 演出とナビゲーション（中略、以前のコードと同じ） */}
       <AnimatePresence>
         {isLaunching && (
           <motion.div
@@ -229,6 +228,11 @@ export default function NightSky() {
           <div className="flex items-center gap-4">
             {!isGuest && (
               <>
+                {/* 管理者ボタン（管理者のみ表示） */}
+                {profile?.is_admin && (
+                  <button onClick={() => setView('admin')} className="text-[9px] tracking-widest text-red-500/50 hover:text-red-400 transition-colors">ADMIN</button>
+                )}
+                
                 <button onClick={() => setView('ranking')} className={`text-[9px] tracking-widest transition-colors ${view === 'ranking' ? 'text-blue-400' : 'text-slate-500 hover:text-blue-200'}`}>RANKING</button>
                 <button onClick={() => setView('dashboard')} className={`text-[9px] tracking-widest transition-colors ${view === 'dashboard' ? 'text-blue-400' : 'text-slate-500 hover:text-blue-200'}`}>DASHBOARD</button>
               </>
@@ -249,6 +253,8 @@ export default function NightSky() {
           </div>
         ) : view === 'settings' && profile ? (
           <ProfileSettings initialData={profile} onBack={() => setView('home')} onUpdate={() => fetchPastData(user!.id)} />
+        ) : view === 'admin' && profile?.is_admin ? (
+          <Admin onBack={() => setView('home')} />
         ) : view === 'ranking' && !isGuest ? (
           <Ranking monthlyAge={calculateMonthlyAge(profile?.birthday || "")} onBack={() => setView('home')} />
         ) : view === 'dashboard' ? (
