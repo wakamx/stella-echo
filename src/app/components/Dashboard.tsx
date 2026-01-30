@@ -19,7 +19,6 @@ interface DashboardProps {
 }
 
 export default function Dashboard({ logs, onBack }: DashboardProps) {
-  // viewModeに'pattern'を追加
   const [viewMode, setViewMode] = useState<'day' | 'month' | 'pattern'>('day');
   const [selectedDayData, setSelectedDayData] = useState<{
     date: string;
@@ -28,7 +27,7 @@ export default function Dashboard({ logs, onBack }: DashboardProps) {
     peakValue: number;
   } | null>(null);
 
-  // 1. メイングラフ（日次・月次）の集計：既存のロジックを維持
+  // メイングラフ（日次・月次）の集計
   const mainChartData = useMemo(() => {
     const counts: Record<string, number> = {};
     logs.forEach(log => {
@@ -44,7 +43,7 @@ export default function Dashboard({ logs, onBack }: DashboardProps) {
       .reverse();
   }, [logs, viewMode]);
 
-  // 2. 新機能：24時間オーバーレイ（パターン）の集計
+  // パターン（オーバーレイ）集計
   const patternData = useMemo(() => {
     const hours = Array.from({ length: 24 }, (_, i) => ({
       hour: `${String(i).padStart(2, '0')}:00`,
@@ -52,23 +51,17 @@ export default function Dashboard({ logs, onBack }: DashboardProps) {
       count: 0,
       days: {} as Record<string, number>
     }));
-
-    // 直近7日間を個別の線として抽出
     const last7Days = [...new Set(logs.map(l => new Date(l.created_at).toLocaleDateString()))].slice(0, 7);
-
     logs.forEach(log => {
       const date = new Date(log.created_at);
       const h = date.getHours();
       const dateStr = date.toLocaleDateString();
-
       hours[h].average += log.intensity_db;
       hours[h].count += 1;
-
       if (last7Days.includes(dateStr)) {
         hours[h].days[dateStr] = (hours[h].days[dateStr] || 0) + log.intensity_db;
       }
     });
-
     return hours.map(h => ({
       ...h,
       average: h.count > 0 ? Math.round(h.average / h.count) : 0,
@@ -76,34 +69,59 @@ export default function Dashboard({ logs, onBack }: DashboardProps) {
     }));
   }, [logs]);
 
-  // 既存のドリルダウンロジック
+  // --- 【修正】詳細データの整形ロジック ---
   const handleBarClick = (data: any) => {
     if (!data || viewMode !== 'day') return;
     const clickedDateName = data.name;
-    const dayLogs = logs
-      .filter(log => new Date(log.created_at).toLocaleDateString('ja-JP', { month: 'short', day: 'numeric' }) === clickedDateName)
-      .map(log => ({
-        timestamp: new Date(log.created_at).getTime(),
-        time: new Date(log.created_at).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' }),
-        intensity: log.intensity_db
-      }))
-      .sort((a, b) => a.timestamp - b.timestamp);
 
-    if (dayLogs.length > 0) {
-      const peak = [...dayLogs].sort((a, b) => b.intensity - a.intensity)[0];
-      setSelectedDayData({
-        date: clickedDateName,
-        logs: dayLogs,
-        peakTime: peak.time,
-        peakValue: peak.intensity
-      });
-    }
+    // 1. その日の実際のログを抽出
+    const rawDayLogs = logs.filter(log => 
+      new Date(log.created_at).toLocaleDateString('ja-JP', { month: 'short', day: 'numeric' }) === clickedDateName
+    );
+
+    if (rawDayLogs.length === 0) return;
+
+    // 2. ピーク情報の計算
+    const peakLog = [...rawDayLogs].sort((a, b) => b.intensity_db - a.intensity_db)[0];
+    const peakTime = new Date(peakLog.created_at).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' });
+    const peakValue = peakLog.intensity_db;
+
+    // 3. 24時間分のデータ枠を作成（00:00 ~ 23:00、1時間刻みの場合）
+    // もっと細かくしたい場合はループ回数を増やして分単位にします
+    const timeSlots = Array.from({ length: 24 }, (_, i) => {
+      const hour = String(i).padStart(2, '0');
+      return {
+        time: `${hour}:00`,
+        intensity: 0,
+        count: 0
+      };
+    });
+
+    // 4. 実際のデータを枠にマージ（同じ時間のデータは平均または合計する）
+    rawDayLogs.forEach(log => {
+      const date = new Date(log.created_at);
+      const hourIndex = date.getHours(); // 0~23
+      timeSlots[hourIndex].intensity += log.intensity_db;
+      timeSlots[hourIndex].count += 1;
+    });
+
+    // 5. 平均値を計算してグラフ用データにする
+    const formattedLogs = timeSlots.map(slot => ({
+      time: slot.time,
+      intensity: slot.count > 0 ? Math.round(slot.intensity / slot.count * 10) / 10 : 0
+    }));
+
+    setSelectedDayData({
+      date: clickedDateName,
+      logs: formattedLogs,
+      peakTime,
+      peakValue
+    });
   };
 
   return (
     <div className="w-full max-w-2xl bg-slate-900/60 backdrop-blur-2xl p-6 rounded-3xl border border-blue-900/30 shadow-2xl relative min-h-[450px]">
       
-      {/* ドリルダウン詳細表示（既存のイメージを維持） */}
       <AnimatePresence>
         {selectedDayData && (
           <motion.div 
@@ -115,7 +133,7 @@ export default function Dashboard({ logs, onBack }: DashboardProps) {
             <div className="flex justify-between items-start mb-6">
               <div>
                 <p className="text-blue-400 text-[10px] tracking-widest uppercase">{selectedDayData.date} / CHRONICLE</p>
-                <h3 className="text-white text-xl font-light">時間別エネルギー推移</h3>
+                <h3 className="text-white text-xl font-light">時間別エネルギー推移 (24H)</h3>
               </div>
               <button onClick={() => setSelectedDayData(null)} className="text-slate-500 hover:text-white transition-colors text-xs tracking-widest px-4 py-2 bg-slate-900 rounded-full border border-white/5">
                 CLOSE
@@ -131,10 +149,25 @@ export default function Dashboard({ logs, onBack }: DashboardProps) {
                       <stop offset="95%" stopColor="#60a5fa" stopOpacity={0}/>
                     </linearGradient>
                   </defs>
-                  <XAxis dataKey="time" stroke="#334155" fontSize={9} tickLine={false} axisLine={false} interval={Math.floor(selectedDayData.logs.length / 5)} />
+                  <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
+                  <XAxis 
+                    dataKey="time" 
+                    stroke="#334155" 
+                    fontSize={9} 
+                    tickLine={false} 
+                    axisLine={false}
+                    interval={3} // 3時間おきにラベル表示（0, 3, 6...）ですっきりさせる
+                  />
                   <YAxis hide domain={[0, 'auto']} />
                   <Tooltip contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #1e3a8a', borderRadius: '8px', fontSize: '10px' }} itemStyle={{ color: '#60a5fa' }} />
-                  <Area type="monotone" dataKey="intensity" stroke="#60a5fa" fillOpacity={1} fill="url(#colorIntensity)" animationDuration={1500} />
+                  <Area 
+                    type="monotone" 
+                    dataKey="intensity" 
+                    stroke="#60a5fa" 
+                    fillOpacity={1} 
+                    fill="url(#colorIntensity)" 
+                    animationDuration={1500}
+                  />
                 </AreaChart>
               </ResponsiveContainer>
             </div>
@@ -153,7 +186,7 @@ export default function Dashboard({ logs, onBack }: DashboardProps) {
         )}
       </AnimatePresence>
 
-      {/* メインダッシュボード */}
+      {/* メインダッシュボード（変更なし） */}
       <div className="flex justify-between items-center mb-8">
         <button onClick={onBack} className="text-blue-400 text-xs tracking-widest flex items-center gap-2 hover:text-blue-200">
           ← BACK TO SKY
@@ -179,20 +212,17 @@ export default function Dashboard({ logs, onBack }: DashboardProps) {
       <div className="h-64 w-full cursor-pointer">
         <ResponsiveContainer width="100%" height="100%">
           {viewMode === 'pattern' ? (
-            // パターン（オーバーレイ）表示
             <LineChart data={patternData}>
               <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
               <XAxis dataKey="hour" stroke="#475569" fontSize={9} tickLine={false} axisLine={false} />
               <YAxis hide />
               <Tooltip contentStyle={{ backgroundColor: '#0f172a', border: 'none', borderRadius: '12px', fontSize: '10px' }} />
               <Line type="monotone" dataKey="average" stroke="#60a5fa" strokeWidth={3} dot={false} animationDuration={2000} />
-              {/* 各日付の重なり線 */}
               {Object.keys(patternData[0]).filter(k => !['hour','average','count','days'].includes(k)).map((date) => (
                 <Line key={date} type="monotone" dataKey={date} stroke="#3b82f6" strokeWidth={1} opacity={0.2} dot={false} strokeDasharray="5 5" />
               ))}
             </LineChart>
           ) : (
-            // 既存の日次・月次表示（棒グラフ）
             <BarChart data={mainChartData}>
               <XAxis dataKey="name" stroke="#475569" fontSize={10} tickLine={false} axisLine={false} dy={10} />
               <Bar dataKey="total" radius={[4, 4, 0, 0]} onClick={(data) => handleBarClick(data)}>
