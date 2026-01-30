@@ -173,8 +173,8 @@ export default function NightSky() {
       // 【変更】Refにデータを蓄積
       recordingRef.current.history.push(avg);
 
-      // 60秒経過したら保存
-      if (Date.now() - recordingRef.current.startTime > 60000) {
+      // 15秒経過したら保存
+      if (Date.now() - recordingRef.current.startTime > 15000) {
         await saveRecordingData();
       }
       animationFrameRef.current = requestAnimationFrame(update);
