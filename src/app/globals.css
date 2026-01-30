@@ -8,3 +8,15 @@
     overscroll-behavior-y: none;
   }
 }
+
+@media (max-width: 768px) {
+  /* Vercel Toolbarの本体（ツールバーとコメント機能）を非表示にする */
+  vercel-live-feedback {
+    display: none !important;
+  }
+  
+  /* 新しいバージョンのToolbar用（念のため） */
+  #vercel-toolbar {
+    display: none !important;
+  }
+}
