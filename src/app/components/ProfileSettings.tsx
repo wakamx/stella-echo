@@ -6,10 +6,11 @@ import { supabase } from '@/lib/supabase';
 interface ProfileSettingsProps {
   initialData: { nickname: string; birthday: string };
   onBack: () => void;
-  onUpdate: () => void; // 保存後にデータを再取得するためのコールバック
+  onUpdate: () => void;
+  showToast: (msg: string, type: 'success' | 'error' | 'info') => void;
 }
 
-export default function ProfileSettings({ initialData, onBack, onUpdate }: ProfileSettingsProps) {
+export default function ProfileSettings({ initialData, onBack, onUpdate, showToast }: ProfileSettingsProps) {
   const [nickname, setNickname] = useState(initialData.nickname);
   const [birthday, setBirthday] = useState(initialData.birthday);
   const [loading, setLoading] = useState(false);
@@ -25,9 +26,9 @@ export default function ProfileSettings({ initialData, onBack, onUpdate }: Profi
         .eq('id', user.id);
 
       if (error) {
-        alert('更新に失敗しました: ' + error.message);
+        showToast('更新に失敗しました: ' + error.message, 'error');
       } else {
-        alert('プロフィールを更新しました');
+        showToast('プロフィールを更新しました', 'success');
         onUpdate();
         onBack();
       }
@@ -36,13 +37,14 @@ export default function ProfileSettings({ initialData, onBack, onUpdate }: Profi
   };
 
   return (
-    <div className="w-full max-w-sm bg-slate-900/60 backdrop-blur-2xl p-8 rounded-3xl border border-blue-900/30 shadow-2xl animate-in fade-in zoom-in duration-300">
+    <div className="w-full max-w-sm bg-slate-900/60 backdrop-blur-2xl p-8 rounded-3xl border border-blue-900/30 shadow-2xl animate-in fade-in zoom-in duration-300" role="form" aria-label="プロフィール設定">
       <h3 className="text-white text-center text-xl font-light tracking-[0.2em] mb-8">VOYAGER SETTINGS</h3>
-      
+
       <div className="space-y-6">
         <div className="flex flex-col gap-2">
-          <label className="text-blue-400 text-[10px] tracking-[0.2em] uppercase ml-1">Nickname</label>
+          <label htmlFor="nickname" className="text-blue-400 text-[10px] tracking-[0.2em] uppercase ml-1">Nickname</label>
           <input
+            id="nickname"
             type="text"
             value={nickname}
             className="bg-slate-950/50 border border-blue-900/50 text-white px-4 py-3 rounded-xl focus:outline-none focus:ring-1 focus:ring-blue-500 font-light"
@@ -51,8 +53,9 @@ export default function ProfileSettings({ initialData, onBack, onUpdate }: Profi
         </div>
 
         <div className="flex flex-col gap-2">
-          <label className="text-blue-400 text-[10px] tracking-[0.2em] uppercase ml-1">Birthday</label>
+          <label htmlFor="birthday" className="text-blue-400 text-[10px] tracking-[0.2em] uppercase ml-1">Birthday</label>
           <input
+            id="birthday"
             type="date"
             value={birthday}
             className="bg-slate-950/50 border border-blue-900/50 text-white px-4 py-3 rounded-xl focus:outline-none focus:ring-1 focus:ring-blue-500 font-light text-sm"

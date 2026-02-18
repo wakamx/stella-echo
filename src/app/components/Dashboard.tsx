@@ -1,9 +1,9 @@
 'use client';
 
 import { useState, useMemo } from 'react';
-import { 
+import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,
-  AreaChart, Area, LineChart, Line, CartesianGrid, Legend // 【追加】Legendをインポート
+  AreaChart, Area, LineChart, Line, CartesianGrid, Legend
 } from 'recharts';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -18,15 +18,8 @@ interface DashboardProps {
   onBack: () => void;
 }
 
-// パターン表示用のカラーパレット（7色）
 const PATTERN_COLORS = [
-  '#ef4444', // Red
-  '#f97316', // Orange
-  '#eab308', // Yellow
-  '#10b981', // Emerald
-  '#06b6d4', // Cyan
-  '#8b5cf6', // Violet
-  '#d946ef', // Fuchsia
+  '#ef4444', '#f97316', '#eab308', '#10b981', '#06b6d4', '#8b5cf6', '#d946ef',
 ];
 
 export default function Dashboard({ logs, onBack }: DashboardProps) {
@@ -38,12 +31,11 @@ export default function Dashboard({ logs, onBack }: DashboardProps) {
     peakValue: number;
   } | null>(null);
 
-  // メイングラフ（日次・月次）の集計
   const mainChartData = useMemo(() => {
     const counts: Record<string, number> = {};
     logs.forEach(log => {
       const date = new Date(log.created_at);
-      const key = viewMode === 'day' 
+      const key = viewMode === 'day'
         ? date.toLocaleDateString('ja-JP', { month: 'short', day: 'numeric' })
         : date.toLocaleDateString('ja-JP', { year: 'numeric', month: 'short' });
       counts[key] = (counts[key] || 0) + log.intensity_db;
@@ -54,12 +46,10 @@ export default function Dashboard({ logs, onBack }: DashboardProps) {
       .reverse();
   }, [logs, viewMode]);
 
-  // 表示する対象の日付リスト（直近7日）を先に算出
   const targetPatternDays = useMemo(() => {
     return [...new Set(logs.map(l => new Date(l.created_at).toLocaleDateString()))].slice(0, 7);
   }, [logs]);
 
-  // パターン（オーバーレイ）集計
   const patternData = useMemo(() => {
     const hours = Array.from({ length: 24 }, (_, i) => ({
       hour: `${String(i).padStart(2, '0')}:00`,
@@ -67,14 +57,14 @@ export default function Dashboard({ logs, onBack }: DashboardProps) {
       count: 0,
       days: {} as Record<string, number>
     }));
-    
+
     logs.forEach(log => {
       const date = new Date(log.created_at);
       const h = date.getHours();
       const dateStr = date.toLocaleDateString();
       hours[h].average += log.intensity_db;
       hours[h].count += 1;
-      
+
       if (targetPatternDays.includes(dateStr)) {
         hours[h].days[dateStr] = (hours[h].days[dateStr] || 0) + log.intensity_db;
       }
@@ -90,7 +80,7 @@ export default function Dashboard({ logs, onBack }: DashboardProps) {
     if (!data || viewMode !== 'day') return;
     const clickedDateName = data.name;
 
-    const rawDayLogs = logs.filter(log => 
+    const rawDayLogs = logs.filter(log =>
       new Date(log.created_at).toLocaleDateString('ja-JP', { month: 'short', day: 'numeric' }) === clickedDateName
     );
 
@@ -102,11 +92,7 @@ export default function Dashboard({ logs, onBack }: DashboardProps) {
 
     const timeSlots = Array.from({ length: 24 }, (_, i) => {
       const hour = String(i).padStart(2, '0');
-      return {
-        time: `${hour}:00`,
-        intensity: 0,
-        count: 0
-      };
+      return { time: `${hour}:00`, intensity: 0, count: 0 };
     });
 
     rawDayLogs.forEach(log => {
@@ -121,20 +107,39 @@ export default function Dashboard({ logs, onBack }: DashboardProps) {
       intensity: slot.count > 0 ? Math.round(slot.intensity / slot.count * 10) / 10 : 0
     }));
 
-    setSelectedDayData({
-      date: clickedDateName,
-      logs: formattedLogs,
-      peakTime,
-      peakValue
-    });
+    setSelectedDayData({ date: clickedDateName, logs: formattedLogs, peakTime, peakValue });
   };
 
+  // 空状態コンポーネント
+  const EmptyState = () => (
+    <div className="flex flex-col items-center justify-center h-64 text-center">
+      <div className="w-16 h-16 bg-blue-900/20 rounded-full flex items-center justify-center mb-6 border border-blue-800/30">
+        <span className="text-2xl opacity-60">✦</span>
+      </div>
+      <p className="text-blue-200/60 text-sm font-light tracking-wide mb-2">まだデータがありません</p>
+      <p className="text-slate-600 text-[10px] tracking-widest">航海を始めてエネルギーを貯めよう</p>
+    </div>
+  );
+
+  if (logs.length === 0) {
+    return (
+      <div className="w-full max-w-2xl bg-slate-900/60 backdrop-blur-2xl p-6 rounded-3xl border border-blue-900/30 shadow-2xl">
+        <div className="flex justify-between items-center mb-8">
+          <button onClick={onBack} className="text-blue-400 text-xs tracking-widest flex items-center gap-2 hover:text-blue-200" aria-label="戻る">
+            ← BACK TO SKY
+          </button>
+        </div>
+        <EmptyState />
+      </div>
+    );
+  }
+
   return (
-    <div className="w-full max-w-2xl bg-slate-900/60 backdrop-blur-2xl p-6 rounded-3xl border border-blue-900/30 shadow-2xl relative min-h-[450px]">
-      
+    <div className="w-full max-w-2xl bg-slate-900/60 backdrop-blur-2xl p-6 rounded-3xl border border-blue-900/30 shadow-2xl relative min-h-[450px]" role="region" aria-label="ダッシュボード">
+
       <AnimatePresence>
         {selectedDayData && (
-          <motion.div 
+          <motion.div
             initial={{ opacity: 0, scale: 0.95 }}
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0, scale: 0.95 }}
@@ -145,7 +150,7 @@ export default function Dashboard({ logs, onBack }: DashboardProps) {
                 <p className="text-blue-400 text-[10px] tracking-widest uppercase">{selectedDayData.date} / CHRONICLE</p>
                 <h3 className="text-white text-xl font-light">時間別エネルギー推移 (24H)</h3>
               </div>
-              <button onClick={() => setSelectedDayData(null)} className="text-slate-500 hover:text-white transition-colors text-xs tracking-widest px-4 py-2 bg-slate-900 rounded-full border border-white/5">
+              <button onClick={() => setSelectedDayData(null)} className="text-slate-500 hover:text-white transition-colors text-xs tracking-widest px-4 py-2 bg-slate-900 rounded-full border border-white/5" aria-label="閉じる">
                 CLOSE
               </button>
             </div>
@@ -155,29 +160,15 @@ export default function Dashboard({ logs, onBack }: DashboardProps) {
                 <AreaChart data={selectedDayData.logs}>
                   <defs>
                     <linearGradient id="colorIntensity" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#60a5fa" stopOpacity={0.8}/>
-                      <stop offset="95%" stopColor="#60a5fa" stopOpacity={0}/>
+                      <stop offset="5%" stopColor="#60a5fa" stopOpacity={0.8} />
+                      <stop offset="95%" stopColor="#60a5fa" stopOpacity={0} />
                     </linearGradient>
                   </defs>
                   <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
-                  <XAxis 
-                    dataKey="time" 
-                    stroke="#334155" 
-                    fontSize={9} 
-                    tickLine={false} 
-                    axisLine={false}
-                    interval={3}
-                  />
+                  <XAxis dataKey="time" stroke="#334155" fontSize={9} tickLine={false} axisLine={false} interval={3} />
                   <YAxis hide domain={[0, 'auto']} />
                   <Tooltip contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #1e3a8a', borderRadius: '8px', fontSize: '10px' }} itemStyle={{ color: '#60a5fa' }} />
-                  <Area 
-                    type="monotone" 
-                    dataKey="intensity" 
-                    stroke="#60a5fa" 
-                    fillOpacity={1} 
-                    fill="url(#colorIntensity)" 
-                    animationDuration={1500}
-                  />
+                  <Area type="monotone" dataKey="intensity" stroke="#60a5fa" fillOpacity={1} fill="url(#colorIntensity)" animationDuration={1500} />
                 </AreaChart>
               </ResponsiveContainer>
             </div>
@@ -197,14 +188,16 @@ export default function Dashboard({ logs, onBack }: DashboardProps) {
       </AnimatePresence>
 
       <div className="flex justify-between items-center mb-8">
-        <button onClick={onBack} className="text-blue-400 text-xs tracking-widest flex items-center gap-2 hover:text-blue-200">
+        <button onClick={onBack} className="text-blue-400 text-xs tracking-widest flex items-center gap-2 hover:text-blue-200" aria-label="戻る">
           ← BACK TO SKY
         </button>
-        <div className="flex bg-slate-950 rounded-full p-1 border border-blue-900/50">
-          {['day', 'month', 'pattern'].map((mode) => (
-            <button 
+        <div className="flex bg-slate-950 rounded-full p-1 border border-blue-900/50" role="tablist" aria-label="表示モード切替">
+          {(['day', 'month', 'pattern'] as const).map((mode) => (
+            <button
               key={mode}
-              onClick={() => setViewMode(mode as any)}
+              onClick={() => setViewMode(mode)}
+              role="tab"
+              aria-selected={viewMode === mode}
               className={`px-4 py-1.5 rounded-full text-[10px] tracking-widest transition-all ${viewMode === mode ? 'bg-blue-600 text-white' : 'text-slate-500'}`}
             >
               {mode.toUpperCase()}
@@ -214,53 +207,37 @@ export default function Dashboard({ logs, onBack }: DashboardProps) {
       </div>
 
       <p className="text-slate-600 text-[9px] mb-6 text-center tracking-[0.3em] uppercase">
-        {viewMode === 'day' ? '棒をタップして一日の流れを解析' : 
-         viewMode === 'month' ? '月間集計データ' : '24時間リズムの重なり（直近7日間）'}
+        {viewMode === 'day' ? '棒をタップして一日の流れを解析' :
+          viewMode === 'month' ? '月間集計データ' : '24時間リズムの重なり（直近7日間）'}
       </p>
 
-      <div className="h-64 w-full cursor-pointer">
+      <div className="h-64 w-full cursor-pointer" role="tabpanel">
         <ResponsiveContainer width="100%" height="100%">
           {viewMode === 'pattern' ? (
             <LineChart data={patternData}>
               <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
               <XAxis dataKey="hour" stroke="#475569" fontSize={9} tickLine={false} axisLine={false} />
               <YAxis hide />
-              
-              {/* 【追加】凡例を表示して、どの日付の線か分かるようにする */}
-              <Legend 
-                wrapperStyle={{ fontSize: '10px', color: '#94a3b8', paddingTop: '10px' }} 
+              <Legend
+                wrapperStyle={{ fontSize: '10px', color: '#94a3b8', paddingTop: '10px' }}
                 iconSize={8}
                 iconType="circle"
               />
-
-              <Tooltip 
-                contentStyle={{ backgroundColor: '#0f172a', border: 'none', borderRadius: '12px', fontSize: '10px' }} 
+              <Tooltip
+                contentStyle={{ backgroundColor: '#0f172a', border: 'none', borderRadius: '12px', fontSize: '10px' }}
                 itemSorter={(item) => (item.value as number) * -1}
               />
-              
-              {/* 平均線 */}
-              <Line 
-                type="monotone" 
-                dataKey="average" 
-                stroke="#ffffff" 
-                strokeWidth={3} 
-                dot={false} 
-                animationDuration={2000} 
-                strokeDasharray="2 2" 
-                connectNulls // 念のため平均線もつなげる
-              />
-
-              {/* 日別ライン */}
+              <Line type="monotone" dataKey="average" stroke="#ffffff" strokeWidth={3} dot={false} animationDuration={2000} strokeDasharray="2 2" connectNulls />
               {targetPatternDays.map((date, index) => (
-                <Line 
-                  key={date} 
-                  type="monotone" 
-                  dataKey={date} 
-                  stroke={PATTERN_COLORS[index % PATTERN_COLORS.length]} 
-                  strokeWidth={1.5} 
-                  opacity={0.9} // 視認性を上げるため不透明度を高く設定
-                  dot={false} 
-                  connectNulls // 【重要】データがない時間帯も線をつなげて表示する
+                <Line
+                  key={date}
+                  type="monotone"
+                  dataKey={date}
+                  stroke={PATTERN_COLORS[index % PATTERN_COLORS.length]}
+                  strokeWidth={1.5}
+                  opacity={0.9}
+                  dot={false}
+                  connectNulls
                   activeDot={{ r: 4 }}
                 />
               ))}

@@ -13,7 +13,6 @@
     "@supabase/supabase-js": "^2.93.3",
     "@tailwindcss/postcss": "^4.1.18",
     "framer-motion": "latest",
-    "lucide-react": "latest",
     "next": "latest",
     "react": "latest",
     "react-dom": "latest",

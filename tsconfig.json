@@ -7,12 +7,14 @@
       "esnext"
     ],
     "baseUrl": ".", // 追加：パス解決の基準フォルダを指定
-    "paths": {      // 追加：エイリアスの設定
-      "@/*": ["./src/*"]
+    "paths": { // 追加：エイリアスの設定
+      "@/*": [
+        "./src/*"
+      ]
     },
     "allowJs": true,
     "skipLibCheck": true,
-    "strict": false,
+    "strict": true,
     "noEmit": true,
     "incremental": true,
     "module": "esnext",
